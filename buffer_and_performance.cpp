@@ -321,6 +321,7 @@ stopMonitoring();
 
 void PerformanceMonitor::startMonitoring() {
 resetMonitoring();
+// Use micros() for better precision on fast downloads
 startTime = millis();
 lastUpdateTime = startTime;
 lastSpeedUpdateTime = startTime;
@@ -412,20 +413,36 @@ formatBytes(totalBytes).c_str(), currentSpeedKBps, averageSpeedKBps);
 void PerformanceMonitor::calculateCurrentSpeed(size_t newBytes) {
 unsigned long now = millis();
 unsigned long dt = now - lastSpeedUpdateTime;
-if (dt == 0) return; // avoid div by zero
+
+// For very fast downloads, use a minimum time delta to prevent division by zero
+// and provide more reasonable speed estimates
+if (dt == 0) {
+    dt = 1; // Use 1ms minimum to avoid division by zero
+}
+
 size_t bytesDelta = 0;
 if (newBytes >= lastByteCount) bytesDelta = newBytes - lastByteCount;
 else bytesDelta = newBytes; // odd wrap-around protection
 
+// Calculate speed with improved precision for small time deltas
 currentSpeedKBps = (bytesDelta / 1024.0f) * 1000.0f / float(dt);
 
-// running average naive approach
-averageSpeedKBps = (averageSpeedKBps * 0.8f) + (currentSpeedKBps * 0.2f);
+// For very small files, use total transfer time for more accurate average
+if (totalBytes > 0 && isActive) {
+    unsigned long totalTime = now - startTime;
+    if (totalTime > 0) {
+        averageSpeedKBps = (totalBytes / 1024.0f) * 1000.0f / float(totalTime);
+    } else {
+        averageSpeedKBps = currentSpeedKBps;
+    }
+} else {
+    // running average naive approach for ongoing transfers
+    averageSpeedKBps = (averageSpeedKBps * 0.8f) + (currentSpeedKBps * 0.2f);
+}
 
 lastByteCount = newBytes;
+lastSpeedUpdateTime = now;
 updateSpeedHistory();
-
-
 }
 
 void PerformanceMonitor::updateSpeedHistory() {

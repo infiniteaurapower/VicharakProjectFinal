@@ -10,15 +10,15 @@ const char* WIFI_SSID = "Airtel_Vive_7601";
 const char* WIFI_PASS = "9910907601@123";
 
 // Example URL and target path — change when integrating
-const String DOWNLOAD_URL = "https://httpbin.org/bytes/1024";
+const String DOWNLOAD_URL = "https://httpbin.org/bytes/102400";  // 100KB file
 const String TARGET_PATH = "/downloaded.bin";
 
 BufferManager globalBufMgr;
 PerformanceMonitor globalPerf;
-HttpDownloader httpDl;
+DualCoreDownloader dualCoreDl;
 
 void setup() {
-Serial.begin(9600);
+Serial.begin(19200);
 delay(100);
 
 Serial.println("Starting up (humanized sketch)");
@@ -41,17 +41,17 @@ if (!globalBufMgr.allocateBuffers()) {
 }
 
 // Attach helpers
-httpDl.setBufferManager(&globalBufMgr);
-httpDl.setPerformanceMonitor(&globalPerf);
+dualCoreDl.setBufferManager(&globalBufMgr);
+dualCoreDl.setPerformanceMonitor(&globalPerf);
 
 
 }
 
 void loop() {
 // One-shot example: perform a single download and then halt (or sleep)
-Serial.println("Starting download: " + DOWNLOAD_URL);
+Serial.println("Starting dual-core FreeRTOS download: " + DOWNLOAD_URL);
 
-DownloadResult res = httpDl.download(DOWNLOAD_URL, TARGET_PATH);
+DownloadResult res = dualCoreDl.download(DOWNLOAD_URL, TARGET_PATH);
 
 if (res.success) {
     Serial.println("Downloaded successfully: " + String(res.totalBytes) + " bytes");

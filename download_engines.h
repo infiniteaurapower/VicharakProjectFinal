@@ -63,3 +63,41 @@ long probeRemoteSize(const String& url);
 // a tiny helper to append to existing file
 bool appendToExistingFile(const String& path, const uint8_t* data, size_t len);
 };
+
+// Dual-core FreeRTOS downloader for high-performance parallel processing
+class DualCoreDownloader : public DownloaderBase {
+public:
+DualCoreDownloader();
+~DualCoreDownloader() override;
+
+DownloadResult download(const String& url, const String& targetPath) override;
+void cancel() override;
+String getName() const override { return String("DualCoreDownloader"); }
+
+// Configuration
+void setBufferManager(BufferManager* mgr) { bufMgr = mgr; }
+void setPerformanceMonitor(PerformanceMonitor* m) { perf = m; }
+void setChunkSize(size_t size) { chunkSize = size; }
+
+private:
+struct DownloadTask {
+    String url;
+    String targetPath;
+    DualCoreDownloader* downloader;
+    DownloadResult* result;
+    SemaphoreHandle_t completionSemaphore;
+};
+
+BufferManager* bufMgr;
+PerformanceMonitor* perf;
+size_t chunkSize;
+bool cancelled;
+
+// FreeRTOS task functions
+static void downloadTaskCore0(void* parameter);
+static void downloadTaskCore1(void* parameter);
+static void coordinatorTask(void* parameter);
+
+// Helper functions
+bool performActualDownload(const String& url, const String& targetPath, DownloadResult* result, PerformanceMonitor* perfMonitor);
+};

@@ -4,6 +4,9 @@
 #include <HTTPClient.h>
 #include <WiFi.h>
 #include <WiFiClient.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/semphr.h>
 
 HttpDownloader::HttpDownloader()
 : cancelled(false), bufMgr(nullptr), perf(nullptr), maxRetries(2) {
@@ -236,4 +239,201 @@ if (remoteSize > 0 && localSize >= (size_t)remoteSize) {
 // // setRangeHeader(localSize)
 res = HttpDownloader::download(url, targetPath);
 return res;
+}
+
+// ===============================================
+// DualCoreDownloader Implementation
+// ===============================================
+
+DualCoreDownloader::DualCoreDownloader() 
+: bufMgr(nullptr), perf(nullptr), chunkSize(8192), cancelled(false) {
+    // Initialize with sensible defaults
+}
+
+DualCoreDownloader::~DualCoreDownloader() {
+    cancel();
+}
+
+DownloadResult DualCoreDownloader::download(const String& url, const String& targetPath) {
+    DownloadResult result;
+    result.success = false;
+    result.totalBytes = 0;
+    cancelled = false;
+
+    Serial.println("Starting dual-core download with FreeRTOS tasks");
+    
+    // Create semaphore for task coordination
+    SemaphoreHandle_t completionSemaphore = xSemaphoreCreateBinary();
+    if (!completionSemaphore) {
+        result.errorMessage = "Failed to create completion semaphore";
+        return result;
+    }
+
+    // Create task structure
+    DownloadTask task = {
+        .url = url,
+        .targetPath = targetPath,
+        .downloader = this,
+        .result = &result,
+        .completionSemaphore = completionSemaphore
+    };
+
+    // Start performance monitoring
+    if (perf) {
+        perf->startMonitoring();
+    }
+
+    // Create FreeRTOS task on Core 0 (dedicated to download processing)
+    TaskHandle_t downloadTaskHandle = nullptr;
+    BaseType_t taskResult = xTaskCreatePinnedToCore(
+        downloadTaskCore0,      // Task function
+        "DownloadCore0",        // Name
+        8192,                   // Stack size
+        &task,                  // Parameters
+        2,                      // Priority
+        &downloadTaskHandle,    // Task handle
+        0                       // Core 0
+    );
+
+    if (taskResult != pdPASS) {
+        result.errorMessage = "Failed to create download task on Core 0";
+        vSemaphoreDelete(completionSemaphore);
+        return result;
+    }
+
+    // Wait for completion with timeout (30 seconds)
+    if (xSemaphoreTake(completionSemaphore, pdMS_TO_TICKS(30000)) == pdTRUE) {
+        Serial.println("Dual-core download completed successfully");
+    } else {
+        result.success = false;
+        result.errorMessage = "Download timeout after 30 seconds";
+        cancel();
+    }
+
+    // Clean up
+    vSemaphoreDelete(completionSemaphore);
+    
+    // Finish performance monitoring
+    if (perf && result.success) {
+        perf->stopMonitoring();
+    }
+
+    return result;
+}
+
+void DualCoreDownloader::cancel() {
+    cancelled = true;
+}
+
+void DualCoreDownloader::downloadTaskCore0(void* parameter) {
+    DownloadTask* task = static_cast<DownloadTask*>(parameter);
+    DualCoreDownloader* downloader = task->downloader;
+    
+    Serial.println("Download task running on Core 0");
+    
+    // Perform the actual download using the existing HttpDownloader logic
+    bool success = downloader->performActualDownload(task->url, task->targetPath, task->result, downloader->perf);
+    
+    task->result->success = success;
+    
+    // Signal completion
+    xSemaphoreGive(task->completionSemaphore);
+    
+    // Delete task
+    vTaskDelete(nullptr);
+}
+
+void DualCoreDownloader::downloadTaskCore1(void* parameter) {
+    // Reserved for future parallel processing features
+    // Could be used for simultaneous file processing, compression, etc.
+    vTaskDelete(nullptr);
+}
+
+void DualCoreDownloader::coordinatorTask(void* parameter) {
+    // Reserved for coordinating multiple parallel downloads
+    vTaskDelete(nullptr);
+}
+
+bool DualCoreDownloader::performActualDownload(const String& url, const String& targetPath, DownloadResult* result, PerformanceMonitor* perfMonitor) {
+    // Use existing HttpDownloader logic but with FreeRTOS task context
+    HTTPClient http;
+    http.begin(url);
+    
+    int httpCode = http.GET();
+    if (httpCode != HTTP_CODE_OK) {
+        result->errorMessage = "HTTP error: " + String(httpCode);
+        http.end();
+        return false;
+    }
+
+    int contentLength = http.getSize();
+    if (contentLength <= 0) {
+        result->errorMessage = "Unknown content length";
+        http.end();
+        return false;
+    }
+
+    // Open file for writing
+    File file = SPIFFS.open(targetPath, FILE_WRITE);
+    if (!file) {
+        result->errorMessage = "Cannot open file for writing: " + targetPath;
+        http.end();
+        return false;
+    }
+
+    WiFiClient* stream = http.getStreamPtr();
+    size_t totalBytes = 0;
+    uint8_t buffer[1024];
+    size_t originalContentLength = contentLength;
+
+    // Download in chunks with FreeRTOS yielding and progress updates
+    while (http.connected() && (contentLength > 0 || contentLength == -1)) {
+        if (cancelled) {
+            result->errorMessage = "Download cancelled";
+            file.close();
+            http.end();
+            return false;
+        }
+
+        size_t bytesAvailable = stream->available();
+        if (bytesAvailable > 0) {
+            size_t bytesToRead = min(bytesAvailable, sizeof(buffer));
+            size_t bytesRead = stream->readBytes(buffer, bytesToRead);
+            
+            if (file.write(buffer, bytesRead) != bytesRead) {
+                result->errorMessage = "File write error";
+                file.close();
+                http.end();
+                return false;
+            }
+            
+            totalBytes += bytesRead;
+            
+            // Update performance monitoring with progress
+            if (perfMonitor) {
+                if (originalContentLength > 0) {
+                    perfMonitor->updateProgress(totalBytes, originalContentLength);
+                } else {
+                    perfMonitor->updateProgress(totalBytes);
+                }
+            }
+            
+            if (contentLength > 0) {
+                contentLength -= bytesRead;
+            }
+        } else {
+            // Yield to other tasks
+            vTaskDelay(pdMS_TO_TICKS(1));
+        }
+    }
+
+    file.close();
+    http.end();
+    
+    result->totalBytes = totalBytes;
+    result->success = true;
+    
+    Serial.println("Core 0 download completed: " + String(totalBytes) + " bytes");
+    
+    return true;
 }
