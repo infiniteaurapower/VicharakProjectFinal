@@ -6,8 +6,8 @@
 #include "spiffs_management.h"
 
 // Tweak these to match your network
-const char* WIFI_SSID = "wifiname";
-const char* WIFI_PASS = "password";
+const char* WIFI_SSID = "YourNetwork";
+const char* WIFI_PASS = "YourPassword";
 
 // Example URL and target path — change when integrating
 const String DOWNLOAD_URL = "https://httpbin.org/bytes/102400";  // 100KB file

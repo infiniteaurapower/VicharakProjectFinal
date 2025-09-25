@@ -1,0 +1,25 @@
+# Arduino build artifacts
+*.bin
+*.hex
+*.elf
+*.map
+
+# IDE files
+.vscode/
+*.code-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.bak
+*~
+
+# Node modules (if any web components)
+node_modules/
+
+# Build directories
+build/
+dist/
